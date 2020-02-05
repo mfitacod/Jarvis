@@ -1,0 +1,20 @@
+#!/bin/bash
+# this script should be called from cron with a line based on the following (each day at midnight)
+# */1 0 * * * /usr/local/bin/jarvis > /var/log/jarvis/jarvis-archivelog.log 2>&1 || true
+jarvis_run="/tmp/jarvis/bug.txt"
+sleeptime=10
+mkdir -p /var/lock/jarvis
+mkdir -p /var/log/jarvis
+mkdir -p /var/local/jarvis
+mkdir -p /tmp/jarvis
+flock -n /var/lock/jarvis -c "/usr/local/bin/jarvis >> /var/log/jarvis/jarvis.log 2>&1" 
+sleep ${sleeptime} # on laisse tourner le code au minimum 10 secondes, ce qui doit être suffisant pour que le programme fasse un touch sur ${jarvis_run}
+ilyauneminute=$(date  "+%s" -d "-1 minute")
+timejarvisrun=$(date "+%s" -r "${jarvis_run}")
+ echo "timejarvisrun: $timejarvisrun ; ilyauneminute: $ilyauneminute" >> "/var/log/jarvis/jarvis.log"
+if [[ $timejarvisrun -le $ilyauneminute ]]
+then	# ${jarvis_run} n'a pas été touché depuis plus d'une minute
+	echo "JARVIS-LAUNCH: send killall signal to jarvis" >> "/var/log/jarvis/jarvis.log"
+	#killall jarvis # le redémarrage se fera via le cron dans la minute suivante
+        echo "JARVIS-LAUNCH: sent killall signal to jarvis" >> "/var/log/jarvis.log"
+fi

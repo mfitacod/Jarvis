@@ -1,0 +1,48 @@
+#!/bin/bash
+# Ce fichier devrait être placé dans /usr/local/bin/jarvis-archivelog
+# this script should be called from cron with a line based on the following (each day at midnight)
+# 0 0 * * * /home/pi/.../archive_log.sh > /home/pi/.../LOG/archive_log.log 2>&1 || true
+logdir="/var/log/jarvis/" # chemin absolu
+bakdir="/var/log/jarvis/old/" # chemin absolu
+clearlogs="/var/log/jarvis/old/unencrypted/"
+KEEP_CLEAR_LOGS_FOR="1 days"
+cle="porte-OPERA"
+
+if [[ -f "$cle".pub.asc ]]; then gpg --import "$cle".pub.asc; fi
+
+# Archive all existing log to the right dir, with encryption
+for file in "${logdir}"/*;
+do 
+#    echo "$file"
+    file_name="${file##*/}"
+    date_fichier=$(TZ=IST date "+%Y-%m-%d %H:%M:%S" -r  "$file")
+    logmonth=$(date -r ${file} "+%m")
+    logyear=$(date -r ${file}  "+%Y")
+    logdate=$(date -r ${file}  "+%Y-%m-%dT%H%M%S")
+    logname="${logdate}-${file_name%.log}.log"
+    repbak="$bakdir/$logyear/$logmonth/"
+    mkdir -p "$repbak"
+    mkdir -p "$clearlogs"
+    gpg --output "${repbak}/${logname}.gpg" --no-options --no-default-recipient --recipient "$cle" --trust-model always --encrypt "$file" && mv -- "$file" "${clearlogs}/${logname}"
+done
+
+# Delete old clear files
+date_clear_logs=$(date "+%s" -d "-${KEEP_CLEAR_LOGS_FOR}")
+#echo "$date_clear_logs"
+for file in "${clearlogs}"/*
+do
+#    echo "$file"
+    date_file=$(TZ=IST date "+%s" -r "${file}")
+#    echo "$date_file"
+    if [[ $date_clear_logs -ge $date_file ]];
+    then
+        rm -- "$file"
+    fi
+done
+
+
+# Calculs de dates:
+# TZ=IST date '+%Y-%m-%d %H:%M:%S' -d "2020-01-26 09:39:03 IST +3 hours"
+# hours -> days, minutes, seconds, 
+# date fichier/répertoire
+#  date '+%Y-%m-%d %H:%M:%S' -r tests

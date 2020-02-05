@@ -1,0 +1,370 @@
+#!/usr/bin/python -u
+# -*- coding: utf8 -*-
+# Permet la creation du mot de passe aleatoire
+import random
+import string
+
+# Gestion des pins et du lecteur de carte
+import RPi.GPIO as GPIO
+import MFRC522
+
+# Gestion des fichiers
+import os
+import shutil
+from pathlib2 import Path
+
+# Gestion des dates et heures
+from datetime import datetime
+import time
+import pytz
+
+# Librairie d'utilisation du lecteur de cartes
+MIFAREReader = MFRC522.MFRC522()
+# Variable pour la boucle infinie de lecture de cartes
+continue_reading = True
+# Chemin des differents dossiers necessaires a l'ecriture et la verification des cartes
+PathJarvis = '/bin/jarvis/'
+PathLog = '/var/log/jarvis/'
+PathUIDStaff = '/var/local/jarvis/Staff/'
+PathUIDStudent = '/var/local/jarvis/Student/'
+PathCheck = '/tmp/jarvis/'
+# UID des mastercards
+mastercardStudent = [63,210,113,41]
+mastercardStaff = [63,227,161,41]
+# Conversion des UID en string pour traitement et ecriture
+mastercardStudent_String = ''.join([str("%03d" % mastercardStudent[0]),str("%03d" % mastercardStudent[1]),str("%03d" % mastercardStudent[2]),str("%03d" % mastercardStudent[3])])
+mastercardStaff_String = ''.join([str("%03d" % mastercardStaff[0]),str("%03d" % mastercardStaff[1]),str("%03d" % mastercardStaff[2]),str("%03d" % mastercardStaff[3])])
+# Selection du fuseau horaire de Bruxelles pour les horaires
+tzBrussels = pytz.timezone('Europe/Brussels')
+# Plage horaire d'autorisation des etudiants
+StartStudentTime = '08:00'
+EndStudentTime = '18:00'
+# Configuration des ports GPIO de la Raspberry
+GPIO.setmode(GPIO.BOARD)
+GPIO.setwarnings(False)
+# Pin utilises pour les leds
+redled = 37
+greenled = 35
+blueled = 33
+yellowled = 31
+# Pin du relais
+relay = 29
+# Configuration des etats des pins en sorties
+GPIO.setup(redled, GPIO.OUT)
+GPIO.setup(greenled, GPIO.OUT)
+GPIO.setup(blueled, GPIO.OUT)
+GPIO.setup(yellowled, GPIO.OUT)
+GPIO.setup(relay, GPIO.OUT)
+# Mise a l'etat bas des pins pour les desactiver (sauf la led bleue de fonctionnement)
+GPIO.output(relay, GPIO.LOW)
+GPIO.output(redled, GPIO.LOW)
+GPIO.output(greenled, GPIO.LOW)
+GPIO.output(blueled, GPIO.HIGH)
+GPIO.output(yellowled, GPIO.LOW)
+
+
+# Genere une suite aleatoire de chiffres et de lettres (min et maj)
+def randomStringDigits(stringLength=16):
+    lettersAndDigits = string.ascii_letters + string.digits
+    RandomPassword = ''.join(random.choice(lettersAndDigits) for i in range(stringLength))
+    return RandomPassword
+
+# Convertit les listes retournees par le lecteur de carte en chaine de caracteres pour le traitement
+def ListToString(List):
+    ListString = ''
+    for variable in List:
+        ListString += str("%03d" % variable)
+    return ListString
+
+# Verifie qu'il y a une carte presente a proximite du lecteur
+def FindCard():
+    
+    # global MIFAREReader
+    
+    (status,TagType) = MIFAREReader.MFRC522_Request(MIFAREReader.PICC_REQIDL)
+    if status == MIFAREReader.MI_OK:
+        # Avoir UID de la carte
+        (status,uid) = MIFAREReader.MFRC522_Anticoll()
+        return status, uid
+    else :
+        return status,TagType
+
+# Authentification de la carte pour permettre sa lecture et son ecriture    
+def AuthentificationCard(uid) :
+    
+    # global MIFAREReader
+    # Cle par defaut des cartes
+    key = [0xFF,0xFF,0xFF,0xFF,0xFF,0xFF]
+    # Selectionne la carte
+    MIFAREReader.MFRC522_SelectTag(uid)
+    # Authentification de la carte
+    status = MIFAREReader.MFRC522_Auth(MIFAREReader.PICC_AUTHENT1A, 8, key, uid)   
+    return status, uid
+
+# Ajout ou suppression d'une carte
+def AddCard(uid_master, master_Student, master_Staff):
+    
+    # global MIFAREReader, PathJarvis, PathUIDStaff, PathUIDStudent
+
+    continue_reading_AddCard = True
+    PasswordCard = randomStringDigits(16)
+    
+    # Boucle d'attente pour une seconde carte autre que la mastercard presentee a lire
+    while continue_reading_AddCard :
+        (StatusFound, uidFound) = FindCard()
+        # Allume des leds particulieres en fonctions de la mastercard detectee
+        if uid_master == master_Staff:
+            ScanMasterStaffON()
+        elif uid_master == master_Student:
+            ScanMasterStudentON()
+
+        if StatusFound == MIFAREReader.MI_OK :
+            uid_string = ListToString(uidFound[0:4])
+
+            # Si les deux mastercard sont passees successivement, quitte la partie 
+            # creation de carte
+            if uid_string == master_Staff and uid_master == master_Student:
+                return
+            elif uid_string == master_Student and uid_master == master_Staff:
+                return
+    
+            # Si la prochaine carte lue n'est pas la mastercard staff
+            # et que la mastercard est la staff, rentre dans cette condition
+            if uid_string != master_Staff and uid_master == master_Staff:
+                os.chdir(PathUIDStaff)
+
+                # Supprime le dossier et les documents de la carte si elle existe
+                if os.path.isdir(uid_string):
+                    shutil.rmtree(uid_string)
+                
+                # Si la carte n'existe pas, cree son acces
+                else:
+                    CreateCard(uidFound, uid_string, PasswordCard)
+                
+                ScanMasterStaffOFF()
+                return
+    
+            # Si la prochaine carte lue n'est pas la mastercard student
+            # et que la mastercard est la student, rentre dans cette condition                
+            if uid_string != master_Student and uid_master == master_Student:
+                os.chdir(PathUIDStudent)
+                    
+                # Supprime le dossier de la carte si elle existe
+                if os.path.isdir(uid_string):
+                    shutil.rmtree(uid_string)
+                    
+                # Sinon, cree le dossier de la carte et le fichier
+                else:
+                    CreateCard(uidFound, uid_string, PasswordCard)
+                    
+                ScanMasterStudentOFF()    
+                return
+
+# Cree les premiers fichiers d'authentification de la carte : fichier portant le nom de l'uid
+# contenant la date de creation de la carte et le fichier contenant le mot de passe actuel de la carte
+def CreateCard(uid, uid_string, Password):
+    # Convertit le mot de passe en ASCII pour l'ecriture sur la carte
+    PasswordAscii = [ord(c) for c in Password]
+    # Cree et va dans le dossier specifique a la carte pour creer les fichiers
+    os.mkdir(uid_string)
+    os.chdir(uid_string + '/')
+    with open(uid_string + '.txt', 'a') as log_file:
+        log_file.write("{0[0]:03d} {0[1]:03d} {0[2]:03d} {0[3]:03d}\t{1}\n".format(uid, datetime.now(tzBrussels)))
+
+    with open('password.txt', 'a') as log_file:
+        log_file.write("{}\n".format(Password))
+    (StatusAuth, uidAuth) = AuthentificationCard(uid)
+    # Ecrit sur la carte le mot de passe cree
+    if StatusAuth == MIFAREReader.MI_OK:
+        MIFAREReader.MFRC522_Write(8,PasswordAscii)
+        MIFAREReader.MFRC522_StopCrypto1()
+
+# Action des leds quand la mastercard staff cree une nouvelle carte
+def ScanMasterStaffON():
+    GPIO.output(yellowled, GPIO.HIGH)
+    GPIO.output(blueled, GPIO.HIGH)
+
+# Action des leds quand la mastercard staff a fini de creer une nouvelle carte
+def ScanMasterStaffOFF():
+    GPIO.output(yellowled, GPIO.LOW)
+    GPIO.output(blueled, GPIO.LOW)
+   
+# Action des leds quand la mastercard student cree une nouvelle carte
+def ScanMasterStudentON():
+    GPIO.output(greenled, GPIO.HIGH)
+    GPIO.output(blueled, GPIO.HIGH)
+
+# Action des leds quand la mastercard student a fini de creer une nouvelle carte
+def ScanMasterStudentOFF():
+    GPIO.output(greenled, GPIO.LOW)
+    GPIO.output(blueled, GPIO.LOW)
+    
+# Verifie si la carte est dans la liste des cartes autorisees
+def CheckCard(uid, uid_card):
+    
+    # global PathUIDStaff, PathUIDStudent
+
+    os.chdir(PathUIDStaff)
+    # Verifie si la carte existe dans le dossier 'Staff'
+    if os.path.isdir(uid_card):
+        # Ouvre la porte si la carte existe et que le mot de passe est verifiee
+        # sinon, cree une erreur
+        if CheckPassword(uid, uid_card):
+            Log(uid_card)
+            OpenDoorStaff()                    
+            print('Door opened Staff')
+        else:
+            error = 'Staff card known but password denied'
+            WrongCard(uid_card, error)
+        return
+
+    os.chdir(PathUIDStudent)
+    # Verifie si la carte existe dans le dossier 'Student'
+    if os.path.isdir(uid_card):
+        if CheckPassword(uid, uid_card):
+            Log(uid_card)
+            OpenDoorStudent()
+            print('Door opened student')
+        else:
+            error = 'Student card known but password denied'
+            WrongCard(uid_card, error)   
+        return
+    
+    else:
+        error = 'Unknown Card'
+        WrongCard(uid_card, error)
+
+# Verifie le mot de passe present sur la carte et le compare a celui contenu dans le fichier
+# dedie a la carte analyse
+def CheckPassword(uid, uidString):
+    
+    # global MFRC522
+    
+    os.chdir(uidString)
+    if os.path.exists('password.txt'):
+        with open('password.txt', 'r+') as log_file:
+            PasswordSaved = log_file.readline().rstrip()
+    else :
+        return
+
+    (status, uidcard) = AuthentificationCard(uid)
+    PasswordCard = MIFAREReader.MFRC522_Read_useful(8)
+    
+    PasswordCard_String = ''.join(chr(password) for password in PasswordCard)
+    
+    if PasswordCard_String == PasswordSaved :
+        
+        PasswordCard = randomStringDigits(16)
+        PasswordCardAscii = [ord(c) for c in PasswordCard]
+        # Supprime le fichier 'password.txt' puis le recree avec le nouveau mot de passe
+        os.remove('password.txt')
+        
+        with open('password.txt', 'a') as log_file:
+            log_file.write("{}\n".format(PasswordCard))
+
+        MIFAREReader.MFRC522_Write(8,PasswordCardAscii)
+        MIFAREReader.MFRC522_StopCrypto1()
+        return True
+    
+    else :
+        error = 'Wrong password'
+        WrongCard(ListToString(uidcard), error)
+        return False
+
+# Actionne le relais pour permettre l'ouverture a un membre du staff
+def OpenDoorStaff():
+    GPIO.output(blueled, GPIO.LOW)
+    GPIO.output(greenled, GPIO.HIGH)
+    GPIO.output(relay, GPIO.HIGH)
+    time.sleep(1.5)
+    GPIO.output(greenled, GPIO.LOW)
+    GPIO.output(relay, GPIO.LOW)
+    GPIO.output(blueled, GPIO.HIGH)
+
+# Actionne le relais pour permettre l'ouverture a un etudiant
+def OpenDoorStudent():
+    StartStudentTimeNumber = float(StartStudentTime.split(':')[0]) + float(StartStudentTime.split(':')[1])/100
+    EndStudentTimeNumber = float(EndStudentTime.split(':')[0]) + float(EndStudentTime.split(':')[1])/100
+    
+    DateTime = datetime.now(tzBrussels)
+    DateTime.strftime("%H:%M")
+    DateTimeNumber = float(DateTime.strftime("%H:%M").split(':')[0]) + float(DateTime.strftime("%H:%M").split(':')[1])/100
+    # Verifie l'heure de tentative d'acces et ouvre la porte si l'etudiant peut entrer dans les heures convenues
+    if DateTimeNumber >= StartStudentTimeNumber and DateTimeNumber <= EndStudentTimeNumber:        
+        GPIO.output(blueled, GPIO.LOW)
+        GPIO.output(greenled, GPIO.HIGH)
+        GPIO.output(yellowled, GPIO.HIGH)
+        GPIO.output(relay, GPIO.HIGH)
+        time.sleep(1.5)
+        GPIO.output(greenled, GPIO.LOW)
+        GPIO.output(yellowled, GPIO.LOW)
+        GPIO.output(relay, GPIO.LOW)
+        GPIO.output(blueled, GPIO.HIGH)
+        
+    else:    
+        GPIO.output(yellowled, GPIO.HIGH)
+        time.sleep(1.5)
+        GPIO.output(yellowled, GPIO.LOW)
+        
+# Ecrit dans le fichier log la carte qui vient d'etre scannee
+def Log(uid_card):
+    
+    # global PathLog, PathJarvis
+    
+    os.chdir(PathLog)
+    with open('log.txt', 'a') as log:
+        uid_card_int = [int(uid_card[0:3]), int(uid_card[3:6]), int(uid_card[6:9]), int(uid_card[9:12])]
+        log.write("{0[0]:03d} {0[1]:03d} {0[2]:03d} {0[3]:03d}\t{1}\n".format(uid_card_int, datetime.now(tzBrussels)))
+        
+# Ecrit dans un fichier la carte et la date lors d'un echec pour entrer
+def WrongCard(uid_card, error_message):
+    
+    # global PathLog
+    
+    FailDoor()
+    os.chdir(PathLog)
+    with open('log_failed.txt', 'a') as log_file:
+        uid_card_int = [int(uid_card[0:3]), int(uid_card[3:6]), int(uid_card[6:9]), int(uid_card[9:12])]
+        log_file.write("{0[0]:03d} {0[1]:03d} {0[2]:03d} {0[3]:03d}\t{1}\t{2}\n".format(uid_card_int, datetime.now(tzBrussels), error_message))
+   
+# Signale avec les leds que la carte est refusee
+def FailDoor():
+    GPIO.output(redled, GPIO.HIGH)
+    GPIO.output(blueled, GPIO.LOW)
+    time.sleep(1.5)
+    GPIO.output(redled, GPIO.LOW)
+    GPIO.output(blueled, GPIO.HIGH)
+
+
+print ("Placez votre carte RFID")
+# Boucle infinie
+while continue_reading:
+    
+    # Cree tout les dossiers necessaires au bon fonctionnement du programme
+    if not(os.path.isdir(PathLog)):
+        os.mkdir(PathLog)
+    if not(os.path.isdir(PathUIDStaff)):
+        os.mkdir(PathUIDStaff)
+    if not(os.path.isdir(PathUIDStudent)):
+        os.mkdir(PathUIDStudent)
+    if not os.path.isdir(PathCheck):
+        os.mkdir(PathCheck)
+        
+    # Cree un fichier pour verifier que le programme fonctionne correctement
+    Path(PathCheck + 'bug.txt').touch()
+    
+    # Cherche une carte a identifier
+    (StatusFound, uidFound) = FindCard()
+    # Si une carte est trouvee, verifie s'il faut l'ajouter ou verifier son acces
+    if StatusFound == MIFAREReader.MI_OK:
+        # Convertit la liste de l'uid en string pour traitement
+        uid_string = ListToString(uidFound[0:4])
+        # Creation ou suppression de carte
+        if uid_string == mastercardStudent_String or uid_string == mastercardStaff_String:
+            print ("UID master_card detected")
+            AddCard(uid_string,mastercardStudent_String,mastercardStaff_String)
+        # Verification de l'autorisation d'acces de la carte
+        else :
+            print ("Carte normal detectee")
+            CheckCard(uidFound, uid_string)
+            
